@@ -1,0 +1,59 @@
+id: reolink
+name: Reolink
+version: 1.0.0
+description: Reolink camera and NVR integration via HTTP API
+author: NVR System
+homepage: https://github.com/nvr-plugins/reolink
+license: MIT
+
+runtime:
+  type: binary
+  binary: reolink-plugin
+
+capabilities:
+  - discovery
+  - nvr
+  - video
+  - audio
+  - two_way_audio
+  - ptz
+  - presets
+  - motion
+  - ai_detection
+  - snapshot
+  - night_vision
+
+config_schema:
+  type: object
+  properties:
+    devices:
+      type: array
+      description: List of Reolink devices to connect to
+      items:
+        type: object
+        properties:
+          host:
+            type: string
+            description: Device IP address or hostname
+          port:
+            type: integer
+            description: HTTP port (default 80)
+            default: 80
+          username:
+            type: string
+            description: Login username
+          password:
+            type: string
+            description: Login password
+          channels:
+            type: array
+            description: Specific channels to use (empty for all)
+            items:
+              type: integer
+          name:
+            type: string
+            description: Custom name for the device
+        required:
+          - host
+          - username
+          - password
