@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,8 +23,9 @@ type Client struct {
 	username string
 	password string
 
-	token    string
-	tokenExp time.Time
+	token        string
+	tokenExp     time.Time
+	useBasicAuth bool // If true, use URL-based auth instead of token
 
 	http *http.Client
 	mu   sync.RWMutex
@@ -33,19 +36,35 @@ func NewClient(host string, port int, username, password string) *Client {
 	if port == 0 {
 		port = 80
 	}
+	// Create HTTP client that accepts self-signed certs for HTTPS
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 	return &Client{
 		host:     host,
 		port:     port,
 		username: username,
 		password: password,
 		http: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: tr,
 		},
 	}
 }
 
 func (c *Client) baseURL() string {
+	// Use HTTPS for port 443, otherwise HTTP
+	if c.port == 443 {
+		return fmt.Sprintf("https://%s", c.host)
+	}
 	return fmt.Sprintf("http://%s:%d", c.host, c.port)
+}
+
+func (c *Client) baseURLHTTPS() string {
+	if c.port == 443 || c.port == 80 {
+		return fmt.Sprintf("https://%s", c.host)
+	}
+	return fmt.Sprintf("https://%s:%d", c.host, c.port)
 }
 
 func (c *Client) apiURL() string {
@@ -53,7 +72,20 @@ func (c *Client) apiURL() string {
 }
 
 // Login authenticates and obtains a session token
+// Uses two-stage approach like Scrypted: try basic auth first, then token-based login
 func (c *Client) Login(ctx context.Context) error {
+	// First, try basic auth by testing GetDevInfo with credentials in URL
+	// This works on some older firmware and avoids token management
+	log.Printf("Attempting login to %s:%d as user '%s'", c.host, c.port, c.username)
+
+	if err := c.tryBasicAuth(ctx); err == nil {
+		log.Printf("Basic auth succeeded for %s", c.host)
+		return nil
+	} else {
+		log.Printf("Basic auth failed for %s: %v, trying token-based login", c.host, err)
+	}
+
+	// Fall back to token-based Login API
 	cmd := []apiCommand{{
 		Cmd:    "Login",
 		Action: 0,
@@ -65,9 +97,16 @@ func (c *Client) Login(ctx context.Context) error {
 		},
 	}}
 
-	resp, err := c.doRequest(ctx, cmd, false)
+	// Try HTTP first
+	log.Printf("Trying HTTP login to %s", c.baseURL()+"/api.cgi")
+	resp, err := c.doRequestURL(ctx, c.baseURL()+"/api.cgi", cmd)
 	if err != nil {
-		return fmt.Errorf("login request failed: %w", err)
+		// If HTTP fails, try HTTPS
+		log.Printf("HTTP login failed for %s, trying HTTPS: %v", c.host, err)
+		resp, err = c.doRequestURL(ctx, c.baseURLHTTPS()+"/api.cgi", cmd)
+		if err != nil {
+			return fmt.Errorf("login request failed (tried HTTP and HTTPS): %w", err)
+		}
 	}
 
 	if len(resp) == 0 {
@@ -75,8 +114,10 @@ func (c *Client) Login(ctx context.Context) error {
 	}
 
 	loginResp := resp[0]
+	log.Printf("Login response for %s: cmd=%s code=%d", c.host, loginResp.Cmd, loginResp.Code)
+
 	if loginResp.Code != 0 {
-		return fmt.Errorf("login failed: code %d", loginResp.Code)
+		return fmt.Errorf("login failed: %s", reolinkErrorMessage(loginResp.Code))
 	}
 
 	value, ok := loginResp.Value.(map[string]interface{})
@@ -104,12 +145,70 @@ func (c *Client) Login(ctx context.Context) error {
 	c.tokenExp = time.Now().Add(time.Duration(leaseTime-60) * time.Second)
 	c.mu.Unlock()
 
+	log.Printf("Token-based login succeeded for %s, token expires in %d seconds", c.host, leaseTime)
+	return nil
+}
+
+// tryBasicAuth attempts to access the API with credentials in the URL (like older firmware)
+func (c *Client) tryBasicAuth(ctx context.Context) error {
+	// Try with credentials in URL query string
+	authURL := fmt.Sprintf("%s/api.cgi?cmd=GetDevInfo&user=%s&password=%s",
+		c.baseURL(), url.QueryEscape(c.username), url.QueryEscape(c.password))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", authURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// Try HTTPS
+		authURL = fmt.Sprintf("%s/api.cgi?cmd=GetDevInfo&user=%s&password=%s",
+			c.baseURLHTTPS(), url.QueryEscape(c.username), url.QueryEscape(c.password))
+		req, err = http.NewRequestWithContext(ctx, "GET", authURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err = c.http.Do(req)
+		if err != nil {
+			return err
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var responses []apiResponse
+	if err := json.Unmarshal(body, &responses); err != nil {
+		return err
+	}
+
+	if len(responses) == 0 || responses[0].Code != 0 {
+		if len(responses) > 0 {
+			return fmt.Errorf("code %d", responses[0].Code)
+		}
+		return fmt.Errorf("empty response")
+	}
+
+	// Basic auth worked, set a flag to use URL-based auth instead of token
+	c.mu.Lock()
+	c.useBasicAuth = true
+	c.mu.Unlock()
+
 	return nil
 }
 
 func (c *Client) ensureToken(ctx context.Context) error {
 	c.mu.RLock()
-	needLogin := c.token == "" || time.Now().After(c.tokenExp)
+	useBasic := c.useBasicAuth
+	needLogin := !useBasic && (c.token == "" || time.Now().After(c.tokenExp))
 	c.mu.RUnlock()
 
 	if needLogin {
@@ -488,19 +587,27 @@ func (c *Client) hasAIDetection(model string) bool {
 }
 
 func (c *Client) doRequest(ctx context.Context, commands []apiCommand, useToken bool) ([]apiResponse, error) {
-	body, err := json.Marshal(commands)
-	if err != nil {
-		return nil, err
-	}
-
 	reqURL := c.apiURL()
 	if useToken {
 		c.mu.RLock()
 		token := c.token
+		useBasic := c.useBasicAuth
 		c.mu.RUnlock()
-		if token != "" {
+
+		if useBasic {
+			// Use URL-based credentials instead of token
+			reqURL += "?user=" + url.QueryEscape(c.username) + "&password=" + url.QueryEscape(c.password)
+		} else if token != "" {
 			reqURL += "?token=" + url.QueryEscape(token)
 		}
+	}
+	return c.doRequestURL(ctx, reqURL, commands)
+}
+
+func (c *Client) doRequestURL(ctx context.Context, reqURL string, commands []apiCommand) ([]apiResponse, error) {
+	body, err := json.Marshal(commands)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewReader(body))
@@ -530,6 +637,28 @@ func (c *Client) doRequest(ctx context.Context, commands []apiCommand, useToken 
 	}
 
 	return responses, nil
+}
+
+// reolinkErrorMessage translates Reolink API error codes to human-readable messages
+func reolinkErrorMessage(code int) string {
+	switch code {
+	case 1:
+		return "invalid credentials - check username and password"
+	case 2:
+		return "account is locked - too many failed login attempts"
+	case 3:
+		return "session expired - please try again"
+	case 4:
+		return "command not supported on this device"
+	case 5:
+		return "device is busy - try again later"
+	case 6:
+		return "parameter error - invalid request"
+	case 7:
+		return "permission denied - account may not have admin access"
+	default:
+		return fmt.Sprintf("unknown error (code %d)", code)
+	}
 }
 
 // API types
