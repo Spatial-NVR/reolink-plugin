@@ -135,6 +135,14 @@ jobs:
           echo "- TrackMix PTZ cameras" >> CHANGELOG.md
           echo "- Video doorbells" >> CHANGELOG.md
 
+      - name: Create tag (for workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.VERSION }}" -m "Release ${{ steps.version.outputs.VERSION }}"
+          git push origin "${{ steps.version.outputs.VERSION }}"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
