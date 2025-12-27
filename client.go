@@ -520,9 +520,10 @@ func (c *Client) RTMPStreamURL(channel int, stream string) string {
 }
 
 func (c *Client) RTSPStreamURL(channel int, stream string) string {
-	streamSuffix := "01"
+	// Stream suffix: "main" for main stream, "sub" for sub stream
+	streamSuffix := "main"
 	if stream == "sub" {
-		streamSuffix = "00"
+		streamSuffix = "sub"
 	}
 	return fmt.Sprintf("rtsp://%s:%s@%s:554/h264Preview_%02d_%s",
 		url.QueryEscape(c.username), url.QueryEscape(c.password), c.host, channel+1, streamSuffix)
