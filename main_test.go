@@ -45,7 +45,7 @@ func TestPlugin_Shutdown(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize first
-	plugin.Initialize(ctx, nil)
+	_ = plugin.Initialize(ctx, nil)
 
 	// Then shutdown
 	err := plugin.Shutdown(ctx)
@@ -358,7 +358,7 @@ func TestPlugin_HandleRequest_Initialize(t *testing.T) {
 func TestPlugin_HandleRequest_Shutdown(t *testing.T) {
 	plugin := NewPlugin()
 	ctx := context.Background()
-	plugin.Initialize(ctx, nil)
+	_ = plugin.Initialize(ctx, nil)
 
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",

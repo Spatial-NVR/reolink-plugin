@@ -67,7 +67,7 @@ func TestClient_Login(t *testing.T) {
 				},
 			},
 		}}
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -112,7 +112,7 @@ func TestClient_Login(t *testing.T) {
 
 func TestClient_Login_EmptyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]apiResponse{})
+		_ = json.NewEncoder(w).Encode([]apiResponse{})
 	}))
 	defer server.Close()
 
@@ -504,7 +504,7 @@ func TestClient_GetDeviceInfo_MockServer(t *testing.T) {
 				},
 			},
 		}}
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
