@@ -1,9 +1,9 @@
 id: reolink
 name: Reolink
-version: 1.0.0
+version: 1.1.1
 description: Reolink camera and NVR integration via HTTP API
 author: NVR System
-homepage: https://github.com/nvr-plugins/reolink
+homepage: https://github.com/Spatial-NVR/reolink-plugin
 license: MIT
 
 runtime:
