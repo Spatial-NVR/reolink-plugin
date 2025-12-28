@@ -142,10 +142,10 @@ func TestClient_RTSPStreamURL(t *testing.T) {
 		stream   string
 		expected string
 	}{
-		{0, "main", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_01_01"},
-		{0, "sub", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_01_00"},
-		{1, "main", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_02_01"},
-		{1, "sub", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_02_00"},
+		{0, "main", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_01_main"},
+		{0, "sub", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_01_sub"},
+		{1, "main", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_02_main"},
+		{1, "sub", "rtsp://admin:pass123@192.168.1.100:554/h264Preview_02_sub"},
 	}
 
 	for _, tt := range tests {
@@ -450,8 +450,8 @@ func TestChannelInfo(t *testing.T) {
 			Width:  1920,
 			Height: 1080,
 		},
-		RTSPMain: "rtsp://192.168.1.100:554/h264Preview_01_01",
-		RTSPSub:  "rtsp://192.168.1.100:554/h264Preview_01_00",
+		RTSPMain: "rtsp://192.168.1.100:554/h264Preview_01_main",
+		RTSPSub:  "rtsp://192.168.1.100:554/h264Preview_01_sub",
 	}
 
 	if info.Channel != 0 {

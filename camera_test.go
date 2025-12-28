@@ -276,10 +276,10 @@ func TestCamera_StreamURL(t *testing.T) {
 	subURL := camera.StreamURL("sub")
 	defaultURL := camera.StreamURL("") // Should default to sub
 
-	if mainURL != "rtsp://admin:password@192.168.1.100:554/h264Preview_01_01" {
+	if mainURL != "rtsp://admin:password@192.168.1.100:554/h264Preview_01_main" {
 		t.Errorf("Unexpected main stream URL: %s", mainURL)
 	}
-	if subURL != "rtsp://admin:password@192.168.1.100:554/h264Preview_01_00" {
+	if subURL != "rtsp://admin:password@192.168.1.100:554/h264Preview_01_sub" {
 		t.Errorf("Unexpected sub stream URL: %s", subURL)
 	}
 	if defaultURL != subURL {
