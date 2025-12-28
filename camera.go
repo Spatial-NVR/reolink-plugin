@@ -10,12 +10,13 @@ import (
 
 // Camera represents a Reolink camera instance
 type Camera struct {
-	id      string
-	name    string
-	model   string
-	host    string
-	channel int
-	client  *Client
+	id       string
+	name     string
+	model    string
+	host     string
+	channel  int
+	protocol string // "hls" (default), "rtsp", or "rtmp"
+	client   *Client
 
 	ability   *Ability
 	encConfig *EncoderConfig
@@ -34,10 +35,31 @@ func NewCamera(id, name, model, host string, channel int, client *Client) *Camer
 		model:    model,
 		host:     host,
 		channel:  channel,
+		protocol: "hls", // Default to HLS (HTTP-FLV) which is more reliable
 		client:   client,
 		online:   true,
 		lastSeen: time.Now(),
 	}
+}
+
+// SetProtocol sets the streaming protocol for this camera
+func (c *Camera) SetProtocol(protocol string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if protocol == "" {
+		protocol = "hls"
+	}
+	c.protocol = protocol
+}
+
+// Protocol returns the current streaming protocol
+func (c *Camera) Protocol() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.protocol == "" {
+		return "hls"
+	}
+	return c.protocol
 }
 
 func (c *Camera) ID() string      { return c.id }
@@ -104,10 +126,11 @@ func (c *Camera) Capabilities() []string {
 }
 
 func (c *Camera) StreamURL(quality string) string {
+	protocol := c.Protocol()
 	if quality == "main" {
-		return c.client.RTSPStreamURL(c.channel, "main")
+		return c.client.StreamURL(c.channel, "main", protocol)
 	}
-	return c.client.RTSPStreamURL(c.channel, "sub")
+	return c.client.StreamURL(c.channel, "sub", protocol)
 }
 
 func (c *Camera) SnapshotURL() string {

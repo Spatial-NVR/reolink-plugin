@@ -529,12 +529,37 @@ func (c *Client) RTSPStreamURL(channel int, stream string) string {
 		url.QueryEscape(c.username), url.QueryEscape(c.password), c.host, channel+1, streamSuffix)
 }
 
+// HLSStreamURL returns an HTTP-FLV URL for the given channel and stream
+// This is more reliable than RTSP for many Reolink cameras
+func (c *Client) HLSStreamURL(channel int, stream string) string {
+	// Use FLV format which is well-supported by ffmpeg and go2rtc
+	return fmt.Sprintf("http://%s/flv?port=1935&app=bcs&stream=channel%d_%s.bcs&user=%s&password=%s",
+		c.host, channel, stream, url.QueryEscape(c.username), url.QueryEscape(c.password))
+}
+
+// StreamURL returns the stream URL for the specified protocol
+// Supported protocols: "hls" (default), "rtsp", "rtmp"
+func (c *Client) StreamURL(channel int, stream string, protocol string) string {
+	switch protocol {
+	case "rtsp":
+		return c.RTSPStreamURL(channel, stream)
+	case "rtmp":
+		return c.RTMPStreamURL(channel, stream)
+	case "hls", "http", "flv", "":
+		// Default to HLS (HTTP-FLV) which is more reliable
+		return c.HLSStreamURL(channel, stream)
+	default:
+		return c.HLSStreamURL(channel, stream)
+	}
+}
+
 func (c *Client) detectDeviceType(model string) string {
 	model = strings.ToLower(model)
 	if strings.Contains(model, "doorbell") {
 		return "doorbell"
 	}
-	if strings.Contains(model, "nvr") || strings.Contains(model, "rlnk") {
+	// Check for NVR models - "rln" prefix covers RLN8-410, RLN16-410, etc.
+	if strings.Contains(model, "nvr") || strings.HasPrefix(model, "rln") {
 		return "nvr"
 	}
 	if strings.Contains(model, "argus") || strings.Contains(model, "lumus") {

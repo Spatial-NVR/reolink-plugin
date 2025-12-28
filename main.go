@@ -93,6 +93,7 @@ type CameraConfig struct {
 	Password string                 `json:"password"`
 	Channel  int                    `json:"channel,omitempty"`
 	Name     string                 `json:"name,omitempty"`
+	Protocol string                 `json:"protocol,omitempty"` // "hls" (default), "rtsp", or "rtmp"
 	Extra    map[string]interface{} `json:"extra,omitempty"`
 }
 
@@ -108,6 +109,7 @@ type PluginCamera struct {
 	Capabilities []string `json:"capabilities"`
 	Online       bool     `json:"online"`
 	LastSeen     string   `json:"last_seen"`
+	Protocol     string   `json:"protocol"` // "hls", "rtsp", or "rtmp"
 }
 
 type DiscoveredCamera struct {
@@ -222,6 +224,20 @@ func (p *Plugin) HandleRequest(req JSONRPCRequest) JSONRPCResponse {
 			resp.Result = cam
 		} else {
 			resp.Error = &JSONRPCError{Code: -32603, Message: "Camera not found"}
+		}
+
+	case "update_camera":
+		var params struct {
+			CameraID string                 `json:"camera_id"`
+			Settings map[string]interface{} `json:"settings"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid params: " + err.Error()}
+		} else if err := p.UpdateCamera(params.CameraID, params.Settings); err != nil {
+			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
+		} else {
+			// Return updated camera info
+			resp.Result = p.GetCamera(params.CameraID)
 		}
 
 	case "ptz_control":
@@ -463,6 +479,16 @@ func (p *Plugin) AddCamera(ctx context.Context, cfg CameraConfig) (*PluginCamera
 	}
 
 	cameraID := fmt.Sprintf("%s_ch%d", cfg.Host, cfg.Channel)
+
+	// Apply protocol setting if specified
+	if cfg.Protocol != "" {
+		p.mu.RLock()
+		if cam, ok := p.cameras[cameraID]; ok {
+			cam.SetProtocol(cfg.Protocol)
+		}
+		p.mu.RUnlock()
+	}
+
 	return p.GetCamera(cameraID), nil
 }
 
@@ -497,6 +523,7 @@ func (p *Plugin) ListCameras() []PluginCamera {
 			Capabilities: cam.Capabilities(),
 			Online:       cam.IsOnline(),
 			LastSeen:     cam.LastSeen().Format(time.RFC3339),
+			Protocol:     cam.Protocol(),
 		})
 	}
 	return cameras
@@ -523,7 +550,26 @@ func (p *Plugin) GetCamera(id string) *PluginCamera {
 		Capabilities: cam.Capabilities(),
 		Online:       cam.IsOnline(),
 		LastSeen:     cam.LastSeen().Format(time.RFC3339),
+		Protocol:     cam.Protocol(),
 	}
+}
+
+// UpdateCamera updates camera settings (like protocol)
+func (p *Plugin) UpdateCamera(id string, settings map[string]interface{}) error {
+	p.mu.RLock()
+	cam, ok := p.cameras[id]
+	p.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("camera not found: %s", id)
+	}
+
+	if protocol, ok := settings["protocol"].(string); ok {
+		cam.SetProtocol(protocol)
+		log.Printf("Updated camera %s protocol to %s", id, protocol)
+	}
+
+	return nil
 }
 
 func (p *Plugin) PTZControl(ctx context.Context, cameraID string, cmd PTZCommand) error {
