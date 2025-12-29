@@ -15,7 +15,7 @@ type Camera struct {
 	model    string
 	host     string
 	channel  int
-	protocol string // "hls" (default), "rtsp", or "rtmp"
+	protocol string // "rtsp" (default), "hls", or "rtmp"
 	client   *Client
 
 	ability   *Ability
@@ -35,7 +35,7 @@ func NewCamera(id, name, model, host string, channel int, client *Client) *Camer
 		model:    model,
 		host:     host,
 		channel:  channel,
-		protocol: "hls", // Default to HLS (HTTP-FLV) which is more reliable
+		protocol: "rtsp", // Default to RTSP for better audio support
 		client:   client,
 		online:   true,
 		lastSeen: time.Now(),
@@ -47,7 +47,7 @@ func (c *Camera) SetProtocol(protocol string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if protocol == "" {
-		protocol = "hls"
+		protocol = "rtsp"
 	}
 	c.protocol = protocol
 }
@@ -57,7 +57,7 @@ func (c *Camera) Protocol() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.protocol == "" {
-		return "hls"
+		return "rtsp"
 	}
 	return c.protocol
 }
