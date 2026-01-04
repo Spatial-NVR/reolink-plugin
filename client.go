@@ -27,6 +27,9 @@ type Client struct {
 	tokenExp     time.Time
 	useBasicAuth bool // If true, use URL-based auth instead of token
 
+	// Cached device info
+	cachedDevInfo *DeviceInfo
+
 	http *http.Client
 	mu   sync.RWMutex
 }
@@ -261,6 +264,9 @@ func (c *Client) GetDeviceInfo(ctx context.Context) (*DeviceInfo, error) {
 	if v, ok := devInfo["firmVer"].(string); ok {
 		info.FirmwareVersion = v
 	}
+	if v, ok := devInfo["hwVer"].(string); ok {
+		info.HardwareVersion = v
+	}
 	if v, ok := devInfo["channelNum"].(float64); ok {
 		info.ChannelCount = int(v)
 	}
@@ -268,7 +274,19 @@ func (c *Client) GetDeviceInfo(ctx context.Context) (*DeviceInfo, error) {
 		info.ChannelCount = 1
 	}
 
+	// Cache the device info
+	c.mu.Lock()
+	c.cachedDevInfo = info
+	c.mu.Unlock()
+
 	return info, nil
+}
+
+// GetCachedDeviceInfo returns cached device info without making an API call
+func (c *Client) GetCachedDeviceInfo() *DeviceInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cachedDevInfo
 }
 
 // GetAbility retrieves camera capabilities
@@ -424,6 +442,71 @@ func (c *Client) PTZControl(ctx context.Context, channel int, cmd PTZCmd) error 
 	}
 
 	return nil
+}
+
+// ReolinkPTZPreset represents a PTZ preset position from Reolink API
+type ReolinkPTZPreset struct {
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enable"`
+}
+
+// GetPTZPresets retrieves the list of PTZ presets for a channel
+func (c *Client) GetPTZPresets(ctx context.Context, channel int) ([]ReolinkPTZPreset, error) {
+	if err := c.ensureToken(ctx); err != nil {
+		return nil, err
+	}
+
+	cmd := []apiCommand{{
+		Cmd:    "GetPtzPreset",
+		Action: 0,
+		Param: map[string]interface{}{
+			"channel": channel,
+		},
+	}}
+
+	resp, err := c.doRequest(ctx, cmd, true)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(resp) == 0 || resp[0].Code != 0 {
+		return nil, fmt.Errorf("GetPtzPreset failed")
+	}
+
+	value, ok := resp[0].Value.(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	presetList, ok := value["PtzPreset"].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	var presets []ReolinkPTZPreset
+	for _, p := range presetList {
+		preset, ok := p.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ptz := ReolinkPTZPreset{}
+		if id, ok := preset["id"].(float64); ok {
+			ptz.ID = int(id)
+		}
+		if name, ok := preset["name"].(string); ok {
+			ptz.Name = name
+		}
+		if enable, ok := preset["enable"].(float64); ok {
+			ptz.Enabled = enable == 1
+		}
+		// Only include enabled presets with names
+		if ptz.Enabled && ptz.Name != "" {
+			presets = append(presets, ptz)
+		}
+	}
+
+	return presets, nil
 }
 
 // GetSnapshot captures a JPEG snapshot
@@ -705,6 +788,7 @@ type DeviceInfo struct {
 	Name            string `json:"name"`
 	Serial          string `json:"serial"`
 	FirmwareVersion string `json:"firmware_version"`
+	HardwareVersion string `json:"hardware_version"`
 	ChannelCount    int    `json:"channel_count"`
 }
 

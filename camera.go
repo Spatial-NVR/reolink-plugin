@@ -68,6 +68,24 @@ func (c *Camera) Model() string   { return c.model }
 func (c *Camera) Host() string    { return c.host }
 func (c *Camera) Channel() int    { return c.channel }
 
+// DeviceType returns the type of device (camera, doorbell, nvr, battery)
+func (c *Camera) DeviceType() string {
+	if isDoorbellModel(c.model) {
+		return "doorbell"
+	}
+	if isBatteryModel(c.model) {
+		return "battery"
+	}
+	// Check if it's an NVR based on channel count
+	if c.client != nil {
+		info := c.client.GetCachedDeviceInfo()
+		if info != nil && info.ChannelCount > 1 {
+			return "nvr"
+		}
+	}
+	return "camera"
+}
+
 func (c *Camera) IsOnline() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -182,6 +200,64 @@ func (c *Camera) GetSnapshot(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+// StreamURLForProtocol returns the stream URL for a specific protocol
+func (c *Camera) StreamURLForProtocol(quality, protocol string) string {
+	return c.client.StreamURL(c.channel, quality, protocol)
+}
+
+// CameraPreset represents a PTZ preset from the camera
+type CameraPreset struct {
+	ID   string
+	Name string
+}
+
+// GetPTZPresets returns the available PTZ presets for this camera
+func (c *Camera) GetPTZPresets(ctx context.Context) ([]CameraPreset, error) {
+	presets, err := c.client.GetPTZPresets(ctx, c.channel)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []CameraPreset
+	for _, p := range presets {
+		result = append(result, CameraPreset{
+			ID:   fmt.Sprintf("%d", p.ID), // Convert int to string
+			Name: p.Name,
+		})
+	}
+
+	return result, nil
+}
+
+// CameraDeviceInfo represents device information
+type CameraDeviceInfo struct {
+	Model           string
+	Serial          string
+	FirmwareVersion string
+	HardwareVersion string
+	ChannelCount    int
+}
+
+// GetDeviceInfo returns the device information for this camera
+func (c *Camera) GetDeviceInfo() *CameraDeviceInfo {
+	if c.client == nil {
+		return nil
+	}
+
+	info := c.client.GetCachedDeviceInfo()
+	if info == nil {
+		return nil
+	}
+
+	return &CameraDeviceInfo{
+		Model:           info.Model,
+		Serial:          info.Serial,
+		FirmwareVersion: info.FirmwareVersion,
+		HardwareVersion: info.HardwareVersion,
+		ChannelCount:    info.ChannelCount,
+	}
 }
 
 // Helper functions for model detection

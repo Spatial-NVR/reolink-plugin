@@ -283,6 +283,70 @@ func (p *Plugin) HandleRequest(req JSONRPCRequest) JSONRPCResponse {
 			}
 		}
 
+	case "get_capabilities":
+		var params struct {
+			CameraID string `json:"camera_id"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid params"}
+		} else if caps := p.GetCapabilities(params.CameraID); caps != nil {
+			resp.Result = caps
+		} else {
+			resp.Error = &JSONRPCError{Code: -32603, Message: "Camera not found"}
+		}
+
+	case "get_ptz_presets":
+		var params struct {
+			CameraID string `json:"camera_id"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid params"}
+		} else {
+			presets, err := p.GetPTZPresets(ctx, params.CameraID)
+			if err != nil {
+				resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
+			} else {
+				resp.Result = presets
+			}
+		}
+
+	case "get_protocols":
+		var params struct {
+			CameraID string `json:"camera_id"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid params"}
+		} else if protocols := p.GetProtocols(params.CameraID); protocols != nil {
+			resp.Result = protocols
+		} else {
+			resp.Error = &JSONRPCError{Code: -32603, Message: "Camera not found"}
+		}
+
+	case "set_protocol":
+		var params struct {
+			CameraID string `json:"camera_id"`
+			Protocol string `json:"protocol"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid params"}
+		} else if err := p.SetProtocol(params.CameraID, params.Protocol); err != nil {
+			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
+		} else {
+			resp.Result = p.GetCamera(params.CameraID)
+		}
+
+	case "get_device_info":
+		var params struct {
+			CameraID string `json:"camera_id"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid params"}
+		} else if info := p.GetDeviceInfo(params.CameraID); info != nil {
+			resp.Result = info
+		} else {
+			resp.Error = &JSONRPCError{Code: -32603, Message: "Camera not found"}
+		}
+
 	default:
 		resp.Error = &JSONRPCError{Code: -32601, Message: "Method not found: " + req.Method}
 	}
@@ -602,4 +666,204 @@ func (p *Plugin) ProbeCamera(ctx context.Context, host string, port int, usernam
 	}
 	client := NewClient(host, port, username, password)
 	return client.ProbeCamera(ctx)
+}
+
+// CameraCapabilities represents detailed capabilities for a camera
+type CameraCapabilities struct {
+	HasPTZ          bool     `json:"has_ptz"`
+	HasAudio        bool     `json:"has_audio"`
+	HasTwoWayAudio  bool     `json:"has_two_way_audio"`
+	HasSnapshot     bool     `json:"has_snapshot"`
+	DeviceType      string   `json:"device_type"`
+	IsDoorbell      bool     `json:"is_doorbell"`
+	IsNVR           bool     `json:"is_nvr"`
+	IsBattery       bool     `json:"is_battery"`
+	HasAIDetection  bool     `json:"has_ai_detection"`
+	AITypes         []string `json:"ai_types,omitempty"`
+	Protocols       []string `json:"protocols"`
+	CurrentProtocol string   `json:"current_protocol"`
+}
+
+// ProtocolOption represents an available streaming protocol
+type ProtocolOption struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	StreamURL   string `json:"stream_url,omitempty"`
+}
+
+// PTZPreset represents a saved PTZ position
+type PTZPreset struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// RPCDeviceInfo represents detailed device information for RPC responses
+type RPCDeviceInfo struct {
+	Model           string `json:"model"`
+	Manufacturer    string `json:"manufacturer"`
+	Serial          string `json:"serial,omitempty"`
+	FirmwareVersion string `json:"firmware_version,omitempty"`
+	HardwareVersion string `json:"hardware_version,omitempty"`
+	ChannelCount    int    `json:"channel_count"`
+	DeviceType      string `json:"device_type,omitempty"`
+}
+
+// GetCapabilities returns detailed capabilities for a camera
+func (p *Plugin) GetCapabilities(cameraID string) *CameraCapabilities {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	cam, ok := p.cameras[cameraID]
+	if !ok {
+		return nil
+	}
+
+	caps := cam.Capabilities()
+	hasPTZ := contains(caps, "ptz")
+	hasAudio := contains(caps, "audio")
+	hasTwoWay := contains(caps, "two_way_audio")
+	hasAI := contains(caps, "ai_detection")
+
+	// Determine AI types based on capabilities
+	var aiTypes []string
+	if hasAI {
+		aiTypes = []string{"person", "vehicle", "animal"}
+	}
+
+	return &CameraCapabilities{
+		HasPTZ:          hasPTZ,
+		HasAudio:        hasAudio,
+		HasTwoWayAudio:  hasTwoWay,
+		HasSnapshot:     true,
+		DeviceType:      cam.DeviceType(),
+		IsDoorbell:      cam.DeviceType() == "doorbell",
+		IsNVR:           cam.DeviceType() == "nvr",
+		IsBattery:       cam.DeviceType() == "battery",
+		HasAIDetection:  hasAI,
+		AITypes:         aiTypes,
+		Protocols:       []string{"rtsp", "rtmp", "hls"},
+		CurrentProtocol: cam.Protocol(),
+	}
+}
+
+// GetPTZPresets returns available PTZ presets for a camera
+func (p *Plugin) GetPTZPresets(ctx context.Context, cameraID string) ([]PTZPreset, error) {
+	p.mu.RLock()
+	cam, ok := p.cameras[cameraID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("camera not found: %s", cameraID)
+	}
+
+	// Get presets from camera
+	presets, err := cam.GetPTZPresets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []PTZPreset
+	for _, preset := range presets {
+		result = append(result, PTZPreset{
+			ID:   preset.ID,
+			Name: preset.Name,
+		})
+	}
+
+	return result, nil
+}
+
+// GetProtocols returns available streaming protocols for a camera
+func (p *Plugin) GetProtocols(cameraID string) []ProtocolOption {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	cam, ok := p.cameras[cameraID]
+	if !ok {
+		return nil
+	}
+
+	return []ProtocolOption{
+		{
+			ID:          "rtsp",
+			Name:        "RTSP",
+			Description: "Real Time Streaming Protocol - low latency",
+			StreamURL:   cam.StreamURLForProtocol("main", "rtsp"),
+		},
+		{
+			ID:          "rtmp",
+			Name:        "RTMP",
+			Description: "Real Time Messaging Protocol - compatible",
+			StreamURL:   cam.StreamURLForProtocol("main", "rtmp"),
+		},
+		{
+			ID:          "hls",
+			Name:        "HLS/HTTP-FLV",
+			Description: "HTTP streaming - firewall friendly",
+			StreamURL:   cam.StreamURLForProtocol("main", "hls"),
+		},
+	}
+}
+
+// SetProtocol changes the streaming protocol for a camera
+func (p *Plugin) SetProtocol(cameraID string, protocol string) error {
+	p.mu.RLock()
+	cam, ok := p.cameras[cameraID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("camera not found: %s", cameraID)
+	}
+
+	// Validate protocol
+	validProtocols := map[string]bool{"rtsp": true, "rtmp": true, "hls": true}
+	if !validProtocols[protocol] {
+		return fmt.Errorf("invalid protocol: %s (must be rtsp, rtmp, or hls)", protocol)
+	}
+
+	cam.SetProtocol(protocol)
+	log.Printf("Set camera %s protocol to %s", cameraID, protocol)
+	return nil
+}
+
+// GetDeviceInfo returns detailed device information for a camera
+func (p *Plugin) GetDeviceInfo(cameraID string) *RPCDeviceInfo {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	cam, ok := p.cameras[cameraID]
+	if !ok {
+		return nil
+	}
+
+	info := cam.GetDeviceInfo()
+	if info == nil {
+		return &RPCDeviceInfo{
+			Model:        cam.Model(),
+			Manufacturer: "Reolink",
+			ChannelCount: 1,
+			DeviceType:   cam.DeviceType(),
+		}
+	}
+
+	return &RPCDeviceInfo{
+		Model:           info.Model,
+		Manufacturer:    "Reolink",
+		Serial:          info.Serial,
+		FirmwareVersion: info.FirmwareVersion,
+		HardwareVersion: info.HardwareVersion,
+		ChannelCount:    info.ChannelCount,
+		DeviceType:      cam.DeviceType(),
+	}
+}
+
+// Helper function to check if a slice contains a string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
