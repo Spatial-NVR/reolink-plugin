@@ -272,13 +272,13 @@ func TestCamera_StreamURL(t *testing.T) {
 	client := NewClient("192.168.1.100", 80, "admin", "password")
 	camera := NewCamera("cam_1", "Front Door", "RLC-810A", "192.168.1.100", 0, client)
 
-	// Default protocol is HLS (HTTP-FLV)
+	// Default protocol is now RTSP
 	mainURL := camera.StreamURL("main")
 	subURL := camera.StreamURL("sub")
 	defaultURL := camera.StreamURL("") // Should default to sub
 
-	expectedMain := "http://192.168.1.100/flv?port=1935&app=bcs&stream=channel0_main.bcs&user=admin&password=password"
-	expectedSub := "http://192.168.1.100/flv?port=1935&app=bcs&stream=channel0_sub.bcs&user=admin&password=password"
+	expectedMain := "rtsp://admin:password@192.168.1.100:554/h264Preview_01_main"
+	expectedSub := "rtsp://admin:password@192.168.1.100:554/h264Preview_01_sub"
 
 	if mainURL != expectedMain {
 		t.Errorf("Unexpected main stream URL: %s", mainURL)
@@ -311,21 +311,21 @@ func TestCamera_Protocol(t *testing.T) {
 	client := NewClient("192.168.1.100", 80, "admin", "password")
 	camera := NewCamera("cam_1", "Front Door", "RLC-810A", "192.168.1.100", 0, client)
 
-	// Default should be HLS
-	if camera.Protocol() != "hls" {
-		t.Errorf("Expected default protocol 'hls', got '%s'", camera.Protocol())
+	// Default should be RTSP
+	if camera.Protocol() != "rtsp" {
+		t.Errorf("Expected default protocol 'rtsp', got '%s'", camera.Protocol())
 	}
 
 	// Test setting protocol
-	camera.SetProtocol("rtsp")
-	if camera.Protocol() != "rtsp" {
-		t.Errorf("Expected protocol 'rtsp', got '%s'", camera.Protocol())
+	camera.SetProtocol("hls")
+	if camera.Protocol() != "hls" {
+		t.Errorf("Expected protocol 'hls', got '%s'", camera.Protocol())
 	}
 
-	// Empty string should reset to hls
+	// Empty string should reset to rtsp
 	camera.SetProtocol("")
-	if camera.Protocol() != "hls" {
-		t.Errorf("Expected protocol 'hls' after empty set, got '%s'", camera.Protocol())
+	if camera.Protocol() != "rtsp" {
+		t.Errorf("Expected protocol 'rtsp' after empty set, got '%s'", camera.Protocol())
 	}
 }
 

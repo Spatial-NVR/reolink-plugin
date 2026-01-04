@@ -765,10 +765,7 @@ func (p *Plugin) GetPTZPresets(ctx context.Context, cameraID string) ([]PTZPrese
 
 	var result []PTZPreset
 	for _, preset := range presets {
-		result = append(result, PTZPreset{
-			ID:   preset.ID,
-			Name: preset.Name,
-		})
+		result = append(result, PTZPreset(preset))
 	}
 
 	return result, nil
