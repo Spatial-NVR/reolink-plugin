@@ -75,6 +75,14 @@ type Plugin struct {
 	mu      sync.RWMutex
 	ctx     context.Context
 	cancel  context.CancelFunc
+
+	// Settings state for declarative UI
+	settingsHost     string
+	settingsUsername string
+	settingsPassword string
+	settingsProtocol string // "hls", "rtsp", "rtmp"
+	probeResult      *ProbeResultSettings
+	selectedChannels []int
 }
 
 type DeviceConfig struct {
@@ -130,6 +138,46 @@ type HealthStatus struct {
 	Message   string                 `json:"message,omitempty"`
 	LastCheck string                 `json:"last_check"`
 	Details   map[string]interface{} `json:"details,omitempty"`
+}
+
+// Setting types for declarative UI (Scrypted-style)
+type Setting struct {
+	Key         string          `json:"key"`
+	Title       string          `json:"title"`
+	Description string          `json:"description,omitempty"`
+	Type        string          `json:"type"` // string, password, number, boolean, button, device
+	Group       string          `json:"group,omitempty"`
+	Value       interface{}     `json:"value,omitempty"`
+	Placeholder string          `json:"placeholder,omitempty"`
+	Choices     []SettingChoice `json:"choices,omitempty"`
+	Multiple    bool            `json:"multiple,omitempty"`
+	Readonly    bool            `json:"readonly,omitempty"`
+	Immediate   bool            `json:"immediate,omitempty"`
+}
+
+type SettingChoice struct {
+	Title string      `json:"title"`
+	Value interface{} `json:"value"`
+}
+
+// ProbeResultSettings stores the result of a device probe for the settings UI
+// Uses simplified channel info for the settings UI
+type ProbeResultSettings struct {
+	Host            string                 `json:"host"`
+	Model           string                 `json:"model"`
+	Name            string                 `json:"name"`
+	Channels        []ChannelInfoSettings  `json:"channels"`
+	HasPTZ          bool                   `json:"has_ptz"`
+	HasAudio        bool                   `json:"has_audio"`
+	HasTwoWayAudio  bool                   `json:"has_two_way_audio"`
+	HasAIDetection  bool                   `json:"has_ai_detection"`
+	FirmwareVersion string                 `json:"firmware_version"`
+	Serial          string                 `json:"serial"`
+}
+
+type ChannelInfoSettings struct {
+	Channel int    `json:"channel"`
+	Name    string `json:"name"`
 }
 
 type PTZCommand struct {
@@ -347,6 +395,22 @@ func (p *Plugin) HandleRequest(req JSONRPCRequest) JSONRPCResponse {
 			resp.Error = &JSONRPCError{Code: -32603, Message: "Camera not found"}
 		}
 
+	case "get_settings":
+		resp.Result = p.GetSettings()
+
+	case "put_setting":
+		var params struct {
+			Key   string      `json:"key"`
+			Value interface{} `json:"value"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			resp.Error = &JSONRPCError{Code: -32602, Message: "Invalid params: " + err.Error()}
+		} else if err := p.PutSetting(ctx, params.Key, params.Value); err != nil {
+			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
+		} else {
+			resp.Result = map[string]interface{}{"status": "ok"}
+		}
+
 	default:
 		resp.Error = &JSONRPCError{Code: -32601, Message: "Method not found: " + req.Method}
 	}
@@ -369,6 +433,298 @@ func (p *Plugin) Initialize(ctx context.Context, config map[string]interface{}) 
 	}
 
 	log.Printf("Plugin initialized with %d devices", len(p.devices))
+	return nil
+}
+
+// GetSettings returns the declarative settings UI for the plugin
+func (p *Plugin) GetSettings() []Setting {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	settings := []Setting{
+		// Connection group
+		{
+			Key:         "host",
+			Title:       "IP Address / Hostname",
+			Description: "IP address or hostname of your Reolink camera or NVR",
+			Type:        "string",
+			Group:       "Connection",
+			Value:       p.settingsHost,
+			Placeholder: "192.168.1.100",
+		},
+		{
+			Key:         "username",
+			Title:       "Username",
+			Description: "Usually 'admin' for Reolink devices",
+			Type:        "string",
+			Group:       "Connection",
+			Value:       p.settingsUsername,
+			Placeholder: "admin",
+		},
+		{
+			Key:         "password",
+			Title:       "Password",
+			Description: "Device password",
+			Type:        "password",
+			Group:       "Connection",
+			Value:       p.settingsPassword,
+		},
+		{
+			Key:         "protocol",
+			Title:       "Streaming Protocol",
+			Description: "Protocol to use for video streaming",
+			Type:        "string",
+			Group:       "Connection",
+			Value:       p.settingsProtocol,
+			Choices: []SettingChoice{
+				{Title: "HLS (Recommended)", Value: "hls"},
+				{Title: "RTSP", Value: "rtsp"},
+				{Title: "RTMP", Value: "rtmp"},
+			},
+		},
+		// Discovery group
+		{
+			Key:         "probe",
+			Title:       "Discover Device",
+			Description: "Connect to the device and discover available cameras",
+			Type:        "button",
+			Group:       "Setup",
+			Immediate:   true,
+		},
+	}
+
+	// If we have probe results, add camera selection
+	if p.probeResult != nil {
+		// Add device info (readonly)
+		settings = append(settings, Setting{
+			Key:      "device_info",
+			Title:    "Device",
+			Type:     "string",
+			Group:    "Setup",
+			Value:    fmt.Sprintf("%s - %s (%d channels)", p.probeResult.Model, p.probeResult.Name, len(p.probeResult.Channels)),
+			Readonly: true,
+		})
+
+		// Add camera selection if channels available
+		if len(p.probeResult.Channels) > 0 {
+			choices := make([]SettingChoice, len(p.probeResult.Channels))
+			for i, ch := range p.probeResult.Channels {
+				name := ch.Name
+				if name == "" {
+					name = fmt.Sprintf("Channel %d", ch.Channel+1)
+				}
+				choices[i] = SettingChoice{
+					Title: name,
+					Value: ch.Channel,
+				}
+			}
+
+			settings = append(settings, Setting{
+				Key:         "cameras",
+				Title:       "Select Cameras",
+				Description: "Choose which cameras to add to the NVR",
+				Type:        "device",
+				Group:       "Setup",
+				Value:       p.selectedChannels,
+				Choices:     choices,
+				Multiple:    true,
+			})
+
+			// Add button to add selected cameras
+			settings = append(settings, Setting{
+				Key:         "add_cameras",
+				Title:       "Add Selected Cameras",
+				Description: "Add the selected cameras to your NVR",
+				Type:        "button",
+				Group:       "Setup",
+				Immediate:   true,
+			})
+		}
+	}
+
+	return settings
+}
+
+// PutSetting handles setting updates and button actions
+func (p *Plugin) PutSetting(ctx context.Context, key string, value interface{}) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	switch key {
+	case "host":
+		if v, ok := value.(string); ok {
+			p.settingsHost = v
+		}
+
+	case "username":
+		if v, ok := value.(string); ok {
+			p.settingsUsername = v
+		}
+
+	case "password":
+		if v, ok := value.(string); ok {
+			p.settingsPassword = v
+		}
+
+	case "protocol":
+		if v, ok := value.(string); ok {
+			p.settingsProtocol = v
+		}
+
+	case "probe":
+		// Unlock for the probe operation
+		p.mu.Unlock()
+		err := p.doProbe(ctx)
+		p.mu.Lock()
+		return err
+
+	case "cameras":
+		// Handle channel selection
+		p.selectedChannels = nil
+		switch v := value.(type) {
+		case []interface{}:
+			for _, ch := range v {
+				if chNum, ok := ch.(float64); ok {
+					p.selectedChannels = append(p.selectedChannels, int(chNum))
+				}
+			}
+		case []int:
+			p.selectedChannels = v
+		}
+
+	case "add_cameras":
+		// Unlock for the add operation
+		p.mu.Unlock()
+		err := p.doAddSelectedCameras(ctx)
+		p.mu.Lock()
+		return err
+
+	default:
+		return fmt.Errorf("unknown setting: %s", key)
+	}
+
+	return nil
+}
+
+// doProbe performs device discovery
+func (p *Plugin) doProbe(ctx context.Context) error {
+	p.mu.RLock()
+	host := p.settingsHost
+	username := p.settingsUsername
+	password := p.settingsPassword
+	p.mu.RUnlock()
+
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	if username == "" {
+		return fmt.Errorf("username is required")
+	}
+	if password == "" {
+		return fmt.Errorf("password is required")
+	}
+
+	log.Printf("Probing device at %s...", host)
+
+	client := NewClient(host, 0, username, password)
+
+	// Use the existing ProbeCamera method which gets all info
+	probeResult, err := client.ProbeCamera(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to connect to device: %w", err)
+	}
+
+	// Convert to settings-friendly format
+	result := &ProbeResultSettings{
+		Host:            host,
+		Model:           probeResult.Model,
+		Name:            probeResult.Name,
+		FirmwareVersion: probeResult.FirmwareVersion,
+		Serial:          probeResult.Serial,
+		HasPTZ:          probeResult.HasPTZ,
+		HasTwoWayAudio:  probeResult.HasTwoWayAudio,
+		HasAIDetection:  probeResult.HasAIDetection,
+	}
+
+	// Convert channels
+	for _, ch := range probeResult.Channels {
+		result.Channels = append(result.Channels, ChannelInfoSettings{
+			Channel: ch.Channel,
+			Name:    ch.Name,
+		})
+	}
+
+	// If no channels found, assume single channel
+	if len(result.Channels) == 0 {
+		result.Channels = []ChannelInfoSettings{{Channel: 0, Name: probeResult.Name}}
+	}
+
+	p.mu.Lock()
+	p.probeResult = result
+	// Auto-select all channels
+	p.selectedChannels = nil
+	for _, ch := range result.Channels {
+		p.selectedChannels = append(p.selectedChannels, ch.Channel)
+	}
+	p.mu.Unlock()
+
+	log.Printf("Probe complete: found %s with %d channels", result.Model, len(result.Channels))
+	return nil
+}
+
+// doAddSelectedCameras adds the selected cameras to the NVR
+func (p *Plugin) doAddSelectedCameras(ctx context.Context) error {
+	p.mu.RLock()
+	host := p.settingsHost
+	username := p.settingsUsername
+	password := p.settingsPassword
+	protocol := p.settingsProtocol
+	probeResult := p.probeResult
+	selectedChannels := p.selectedChannels
+	p.mu.RUnlock()
+
+	if probeResult == nil {
+		return fmt.Errorf("no device discovered - probe first")
+	}
+
+	if len(selectedChannels) == 0 {
+		return fmt.Errorf("no cameras selected")
+	}
+
+	if protocol == "" {
+		protocol = "hls"
+	}
+
+	log.Printf("Adding %d cameras from %s...", len(selectedChannels), host)
+
+	for _, channel := range selectedChannels {
+		// Find channel name
+		name := fmt.Sprintf("%s Ch%d", probeResult.Name, channel+1)
+		for _, ch := range probeResult.Channels {
+			if ch.Channel == channel && ch.Name != "" {
+				name = ch.Name
+				break
+			}
+		}
+
+		config := CameraConfig{
+			Host:     host,
+			Port:     0,
+			Username: username,
+			Password: password,
+			Channel:  channel,
+			Name:     name,
+			Protocol: protocol,
+		}
+
+		if _, err := p.AddCamera(ctx, config); err != nil {
+			log.Printf("Failed to add camera %s: %v", name, err)
+			// Continue with other cameras
+		} else {
+			log.Printf("Added camera: %s", name)
+		}
+	}
+
 	return nil
 }
 
